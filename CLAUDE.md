@@ -1,5 +1,15 @@
 # compute-instance-ui — Browser-Based Container Desktop Viewer
 
+## Rules for Claude
+
+**Do NOT create a Pull Request under any circumstances unless the exact phrase `"Create PR"` (with double quotes) appears verbatim in the user's prompt.**
+Opening a PR requires that explicit phrase and nothing else counts — paraphrases like "make a PR", "open a pull request", or "submit" do not qualify.
+
+**Do NOT commit or push to any branch under any circumstances unless the exact phrase `"COMMIT"` (with double quotes) appears verbatim in the user's prompt.**
+Paraphrases like "save", "push this", "ship it", or "update the branch" do not qualify.
+
+---
+
 ## Purpose
 
 Provides a browser UI that lets users interact with the XFCE desktop of their running Docker container — no client software required. Think "Royal TS, but web-first for Linux containers on EC2."
