@@ -1,0 +1,11 @@
+{
+  "name": "container-management-studio",
+  "version": "1.0.0",
+  "description": "BFF + Web UI layer for the container management platform",
+  "scripts": {
+    "dev:bff":   "cd bff && npm run dev",
+    "dev:web":   "cd web && npm run dev",
+    "build:web": "cd web && npm run build",
+    "start":     "cd bff && node src/index.js"
+  }
+}

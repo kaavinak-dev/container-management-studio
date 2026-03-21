@@ -20,5 +20,5 @@ const server = http.createServer(app);
 attachPtyProxy(server);
 
 server.listen(PORT, () => {
-  console.log(`compute-instance-ui backend listening on port ${PORT}`);
+  console.log(`container-management-studio BFF listening on port ${PORT}`);
 });

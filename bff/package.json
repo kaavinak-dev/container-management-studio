@@ -1,5 +1,5 @@
 {
-  "name": "compute-instance-ui-backend",
+  "name": "container-management-studio-bff",
   "version": "1.0.0",
   "description": "WebSocket-to-WebSocket proxy that bridges the browser to the container PTY sidecar",
   "main": "src/index.js",
