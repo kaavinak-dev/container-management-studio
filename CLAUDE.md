@@ -1,4 +1,4 @@
-# compute-instance-ui — Browser-Based Container Desktop Viewer
+# container-management-studio — BFF + Web UI
 
 ## Rules for Claude
 
@@ -12,58 +12,116 @@ Paraphrases like "save", "push this", "ship it", or "update the branch" do not q
 
 ## Purpose
 
-Provides a browser UI that lets users interact with the XFCE desktop of their running Docker container — no client software required. Think "Royal TS, but web-first for Linux containers on EC2."
+This repo is the **Browser Layer** for the container management platform. It follows the **Backend for Frontend (BFF)** pattern:
 
-The `container-management` repo handles container lifecycle (create/scan/build/start). This repo handles the **visual GUI layer** on top of those containers.
+- `bff/` — Node.js/Express server. Handles all browser-specific concerns: PTY session management, WebSocket proxying, code editor file API, and relay of deploy requests to the core backend.
+- `web/` — React app (Vite). Talks exclusively to the BFF. Hosts the Monaco code editor, project manager, and PTY terminal viewer.
 
-## Current State
-
-**Only a README exists.** No code has been written yet. This CLAUDE.md captures the architecture and contracts so implementation can proceed.
-
----
-
-## Protocol Chain
-
-```
-Browser ↔ WebSocket (wss://) ↔ Node.js Proxy ↔ VNC TCP ↔ Container XFCE Desktop
-```
-
-- **noVNC** (JS library) renders VNC in a `<canvas>` element in the browser
-- **Node.js backend** proxies WebSocket frames to raw VNC TCP using `ws` + `net` modules
-- **No Apache Guacamole** or heavy gateway needed
+The two directories are owned and deployed together as one unit. Neither is independently meaningful without the other.
 
 ---
 
-## Architecture
+## Repo Architecture: Why Two Repos?
 
 ```
-Browser: React App (noVNC canvas)
-         │  WebSocket wss://
-Node.js Backend (Express)
-  POST /sessions     → store VNC connection details, return sessionId + wsUrl
-  GET  /sessions/:id → return session metadata
-  WS   /proxy/:id   → proxy WS ↔ TCP VNC
-         │  Raw TCP VNC
-Docker Container (on EC2)
-  TigerVNC on port 5900
-  XFCE Desktop + Xvfb
+┌──────────────────────────────────────────────────┐
+│  Repo: container-management  (.NET / C#)         │
+│  Authoritative domain service:                   │
+│    - Upload pipeline (virus scan, npm audit)     │
+│    - Docker container lifecycle                  │
+│    - gRPC sidecar (process diagnostics)          │
+│    - PostgreSQL / MinIO / Hangfire               │
+│  Deployed independently on its own schedule.     │
+└──────────────────────────────────────────────────┘
+                        ▲  REST APIs
+┌──────────────────────────────────────────────────┐
+│  THIS REPO: container-management-studio          │
+│  BFF + Web UI layer:                             │
+│                                                  │
+│  bff/   ← Node.js BFF                            │
+│    - PTY proxy  (/sessions + /proxy/:id)         │
+│    - Code editor file API  (/projects/...)       │
+│    - Deploy relay  (ZIP → /UploadJS)             │
+│    - MinIO client  (editor-projects bucket)      │
+│                                                  │
+│  web/   ← React app                              │
+│    - Monaco editor + file tree                   │
+│    - Project list + deploy UI                    │
+│    - PTY terminal viewer (xterm.js)              │
+└──────────────────────────────────────────────────┘
 ```
+
+The two repos are **not** merged into a monorepo because they have different tech stacks (.NET vs Node.js), different deployment cadences, and different conceptual ownership. This mirrors the pattern used at Spotify (`backend-services` repo + `web-player` repo).
+
+---
+
+## Directory Structure
+
+```
+container-management-studio/
+├── CLAUDE.md                         ← this file
+├── README.md
+├── package.json                      ← root workspace coordinator
+├── bff/                              ← Node.js Backend for Frontend
+│   ├── package.json
+│   └── src/
+│       ├── index.js                  ← Express entry point
+│       ├── routes/
+│       │   ├── sessions.js           ← PTY session management
+│       │   └── projects.js           ← Code editor file API (upcoming)
+│       ├── proxy/
+│       │   └── ptyProxy.js           ← WebSocket ↔ sidecar WS bridge
+│       ├── services/
+│       │   ├── minioClient.js        ← MinIO SDK wrapper (upcoming)
+│       │   └── deployService.js      ← ZIP + POST to /UploadJS (upcoming)
+│       └── templates/
+│           └── nodejs.js             ← Node.js project template (upcoming)
+└── web/                              ← React app (Vite) — to be scaffolded
+    ├── package.json
+    ├── vite.config.js                ← dev proxy: /projects/* /sessions/* → BFF
+    └── src/
+        ├── App.jsx
+        └── components/
+```
+
+---
+
+## BFF Routes
+
+### PTY Sessions (existing)
+
+| Method | Route | What it does |
+|---|---|---|
+| POST | `/sessions` | Store PTY connection details, return `{ sessionId, wsUrl }` |
+| GET | `/sessions/:id` | Return session metadata |
+| WS | `/proxy/:id` | Proxy browser WebSocket ↔ container sidecar WebSocket |
+
+### Code Editor Projects (upcoming)
+
+| Method | Route | What it does |
+|---|---|---|
+| POST | `/projects` | Create project from template, write files to MinIO |
+| GET | `/projects` | List all projects |
+| GET | `/projects/:id/files` | List file paths |
+| GET | `/projects/:id/files/*` | Read file content |
+| PUT | `/projects/:id/files/*` | Write file content |
+| DELETE | `/projects/:id/files/*` | Delete a file |
+| POST | `/projects/:id/deploy` | ZIP files → POST to container-management `/UploadJS` |
 
 ---
 
 ## Contract with container-management
 
-The `container-management` backend must call:
+### PTY sessions — container-management calls this BFF:
 
 ```http
 POST /sessions
 Content-Type: application/json
 
 {
-  "host": "172.17.0.5",       // Container's Docker bridge network IP
-  "port": 5900,               // TigerVNC port (display :0)
-  "password": "secret123",    // VNC password
-  "label": "John's Container" // Optional display name
+  "host": "172.17.0.5",
+  "port": 8080,
+  "label": "John's Container"
 }
 ```
 
@@ -75,110 +133,41 @@ Response:
 }
 ```
 
-User links:
-- Standalone: `https://ec2-host/?sessionId=abc123`
-- Embedded iframe: `https://ec2-host/?sessionId=abc123&embed=true`
+### Deploy — BFF calls container-management:
 
----
+```http
+POST /UploadJS
+Content-Type: multipart/form-data
 
-## Planned Project Structure
-
-```
-compute-instance-ui/
-├── backend/
-│   ├── package.json
-│   └── src/
-│       ├── index.js                  # Express entry point
-│       ├── routes/sessions.js        # POST /sessions, GET /sessions/:id
-│       └── proxy/vncProxy.js         # WebSocket ↔ TCP VNC bridge
-├── frontend/
-│   ├── package.json
-│   └── src/
-│       ├── App.jsx
-│       ├── main.jsx
-│       └── components/
-│           ├── VncViewer.jsx         # Wraps @novnc/novnc
-│           └── SessionList.jsx       # Active sessions list
-├── container-base/
-│   ├── Dockerfile                    # Reference image for container-management to use
-│   └── entrypoint.sh                # Starts Xvfb + XFCE + TigerVNC
-├── nginx/
-│   └── nginx.conf                    # TLS termination + WS upgrade headers
-├── docker-compose.yml
-└── README.md
+files: <zip file>
 ```
 
 ---
 
-## Tech Stack
+## Environment Variables (bff/)
 
-| Layer | Technology |
-|---|---|
-| Frontend | React + Vite + `@novnc/novnc` |
-| Backend | Node.js + Express.js |
-| WS Proxy | `ws` library + Node.js `net` module |
-| Desktop (in container) | XFCE + TigerVNC on port 5900 |
-| Reverse proxy | Nginx (TLS + WS upgrade) |
-| Deployment | Docker Compose |
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | BFF listen port |
+| `MINIO_ENDPOINT` | — | MinIO host |
+| `MINIO_PORT` | `9000` | MinIO port |
+| `MINIO_ACCESS_KEY` | — | MinIO access key |
+| `MINIO_SECRET_KEY` | — | MinIO secret key |
+| `EDITOR_BUCKET` | `editor-projects` | MinIO bucket for editor projects |
+| `CONTAINER_MANAGEMENT_URL` | — | Base URL of the .NET backend (e.g. `http://192.168.99.101:5000`) |
 
 ---
 
-## Container Image Requirements
+## Dev Workflow
 
-Every Docker container launched by `container-management` must include:
+```bash
+# Start BFF
+cd bff && npm run dev
 
-| Requirement | Recommended |
-|---|---|
-| Desktop environment | XFCE (lightweight) |
-| VNC server | TigerVNC (`tigervnc-standalone-server`) |
-| Virtual display | Xvfb (or built into VNC) |
-| DBus session | `dbus-x11` |
-| VNC password | Set via env var `VNC_PASSWORD` at start |
+# Start web app (dev proxy forwards /sessions and /projects to BFF)
+cd web && npm run dev
 
-Ready-made option: `linuxserver/webtop:ubuntu-xfce` (pre-configured XFCE + KasmVNC, port 3000).
-
-Custom Dockerfile base:
-```dockerfile
-FROM ubuntu:22.04
-RUN apt-get install -y xfce4 tigervnc-standalone-server dbus-x11 xterm
+# Or via root scripts:
+npm run dev:bff
+npm run dev:web
 ```
-
----
-
-## Implementation Phases
-
-### Phase 1 — Node.js Backend
-- `POST /sessions` stores `{ host, port, password, label }`, returns `{ sessionId, wsUrl }`
-- `WS /proxy/:sessionId` bridges WS frames ↔ raw VNC TCP socket
-- Cleans up TCP socket on WebSocket disconnect
-
-### Phase 2 — React Frontend (noVNC)
-- Reads `?sessionId=xxx` from URL
-- Renders noVNC canvas full-window
-- Toolbar: connection status, clipboard, fullscreen, disconnect
-- `?embed=true` hides toolbar (for iframe use)
-
-### Phase 3 — Docker Compose
-- Backend + frontend + nginx in one `docker-compose.yml`
-- Nginx: TLS termination + `Upgrade: websocket` headers
-
-### Phase 4 — Reference Container Image
-- `container-base/Dockerfile` for `container-management` to use as base
-- `entrypoint.sh` starts Xvfb + XFCE + TigerVNC
-
----
-
-## Security Notes
-
-- VNC traffic is unencrypted by default — kept on Docker bridge network; browser uses WSS (TLS)
-- VNC server must be running before the proxy connects — enforced by base image spec
-- Docker bridge network allows EC2 host to reach container IPs directly (no port mapping needed)
-- iframes: set `X-Frame-Options: SAMEORIGIN`; use `?embed=true` to hide toolbar
-
----
-
-## Relationship to container-management Sidecar
-
-The `container-management` sidecar (`os-process-manager-service`) runs on `:5000` (HTTP) and `:5001` (gRPC) inside the container for process diagnostics. The VNC server for this UI runs on `:5900`. These are separate services running concurrently inside the same container via `entrypoint.sh`.
-
-If the `container-management` sidecar and the VNC desktop are both required in the same container, the `entrypoint.sh` from `container-management` needs to be extended to also start Xvfb + XFCE + TigerVNC — or the containers can be purpose-built as desktop containers that also embed the sidecar.
