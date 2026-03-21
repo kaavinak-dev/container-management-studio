@@ -1,0 +1,20 @@
+{
+  "name": "compute-instance-ui-backend",
+  "version": "1.0.0",
+  "description": "WebSocket-to-WebSocket proxy that bridges the browser to the container PTY sidecar",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
