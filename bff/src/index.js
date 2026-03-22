@@ -4,7 +4,8 @@ const cors = require('cors');
 const { router: sessionsRouter } = require('./routes/sessions');
 const { router: projectsRouter } = require('./routes/projects');
 const { attachPtyProxy } = require('./proxy/ptyProxy');
-const { ensureBucket } = require('./services/minioClient');
+const { ensureBucket, initProjectMappings } = require('./services/minioClient');
+const backend = require('./services/backendClient');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +25,15 @@ attachPtyProxy(server);
 
 (async () => {
   await ensureBucket();
+
+  try {
+    const projects = await backend.listProjects();
+    initProjectMappings(projects);
+    console.log(`[minio-election] loaded ${projects.length} project→server mappings`);
+  } catch (err) {
+    console.warn('[minio-election] could not load project mappings on startup:', err.message);
+  }
+
   server.listen(PORT, () => {
     console.log(`container-management-studio BFF listening on port ${PORT}`);
   });

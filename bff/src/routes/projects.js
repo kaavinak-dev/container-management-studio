@@ -24,7 +24,9 @@ router.post('/', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'name is required' });
 
   const project = await backend.createProject(name);
-  const { projectId } = project;
+  const { projectId, storageUrl } = project;
+
+  minio.registerProject(projectId, storageUrl);
 
   const { files: templateFiles } = require('../templates/nodejs');
   for (const [path, content] of Object.entries(templateFiles)) {
