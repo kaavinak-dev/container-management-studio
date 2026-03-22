@@ -38,7 +38,7 @@ async function listFiles(projectId) {
     const stream = client.listObjects(BUCKET, prefix, true);
     stream.on('data', obj => {
       const rel = obj.name.slice(prefix.length);
-      if (rel && rel !== '.meta.json') files.push(rel);
+      if (rel) files.push(rel);
     });
     stream.on('end',  () => resolve(files));
     stream.on('error', reject);
@@ -61,42 +61,7 @@ async function deleteProject(projectId) {
   if (keys.length) await client.removeObjects(BUCKET, keys);
 }
 
-async function getProjectMeta(projectId) {
-  const raw = await getFile(projectId, '.meta.json');
-  return JSON.parse(raw);
-}
-
-async function putProjectMeta(projectId, meta) {
-  await putFile(projectId, '.meta.json', JSON.stringify(meta));
-}
-
-async function listAllProjects() {
-  return new Promise((resolve, reject) => {
-    const ids = [];
-    const stream = client.listObjects(BUCKET, '', true);
-    stream.on('data', obj => {
-      if (obj.name.endsWith('/.meta.json')) {
-        ids.push(obj.name.replace('/.meta.json', ''));
-      }
-    });
-    stream.on('end', async () => {
-      const projects = await Promise.all(
-        ids.map(async id => {
-          try {
-            const meta = await getProjectMeta(id);
-            return { projectId: id, ...meta };
-          } catch {
-            return null;
-          }
-        })
-      );
-      resolve(projects.filter(Boolean));
-    });
-    stream.on('error', reject);
-  });
-}
-
-// Returns raw stream — used by deployService to build ZIP without buffering
+// Returns raw stream — used by deploy route to pipe directly into archiver
 function getFileStream(projectId, filePath) {
   return client.getObject(BUCKET, `${projectId}/${filePath}`);
 }
@@ -105,6 +70,5 @@ module.exports = {
   ensureBucket,
   putFile, getFile, listFiles,
   deleteFile, deleteProject,
-  getProjectMeta, putProjectMeta,
-  listAllProjects, getFileStream,
+  getFileStream,
 };

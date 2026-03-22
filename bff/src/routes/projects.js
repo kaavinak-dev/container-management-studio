@@ -1,35 +1,32 @@
 const { Router } = require('express');
-const { v4: uuidv4 } = require('uuid');
 const minio = require('../services/minioClient');
+const backend = require('../services/backendClient');
+const archiver = require('archiver');
+const FormData = require('form-data');
 
 const router = Router();
 
-// Reject paths that try to escape the project dir or touch internal metadata
+// Reject paths that try to escape the project dir
 function isValidPath(p) {
   if (!p) return false;
-  if (p.includes('..'))      return false;
-  if (p.startsWith('/'))     return false;
-  if (p === '.meta.json')    return false;
-  if (p.startsWith('.meta')) return false;
+  if (p.includes('..'))  return false;
+  if (p.startsWith('/')) return false;
   return true;
 }
 
 // POST /projects
 // Body: { name: string }
+// 1. Creates ProjectRecord in backend DB (gets projectId back)
+// 2. BFF uploads template files to MinIO using that same projectId
 // Returns: { projectId, name, files: string[] }
 router.post('/', async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
 
-  const projectId = uuidv4();
+  const project = await backend.createProject(name);
+  const { projectId } = project;
+
   const { files: templateFiles } = require('../templates/nodejs');
-
-  await minio.putProjectMeta(projectId, {
-    name,
-    type: 'nodejs',
-    createdAt: new Date().toISOString(),
-  });
-
   for (const [path, content] of Object.entries(templateFiles)) {
     await minio.putFile(projectId, path, content);
   }
@@ -38,37 +35,38 @@ router.post('/', async (req, res) => {
 });
 
 // GET /projects
-// Returns: [{ projectId, name, type, createdAt }]
+// Returns: [{ projectId, projectName, projectType, status, createdAt }]
 router.get('/', async (req, res) => {
-  const projects = await minio.listAllProjects();
+  const projects = await backend.listProjects();
   return res.json(projects);
 });
 
 // GET /projects/:id
 router.get('/:id', async (req, res) => {
   try {
-    const meta = await minio.getProjectMeta(req.params.id);
-    return res.json({ projectId: req.params.id, ...meta });
+    const project = await backend.getProject(req.params.id);
+    return res.json(project);
   } catch {
     return res.status(404).json({ error: 'Project not found' });
   }
 });
 
 // DELETE /projects/:id
+// Backend deletes DB record; BFF then cleans up MinIO files
 router.delete('/:id', async (req, res) => {
   try {
-    await minio.getProjectMeta(req.params.id); // verify exists
+    await backend.deleteProject(req.params.id); // throws 404 if not found
     await minio.deleteProject(req.params.id);
     return res.status(204).send();
-  } catch {
-    return res.status(404).json({ error: 'Project not found' });
+  } catch (err) {
+    if (err.response?.status === 404) return res.status(404).json({ error: 'Project not found' });
+    throw err;
   }
 });
 
 // GET /projects/:id/files
 router.get('/:id/files', async (req, res) => {
   try {
-    await minio.getProjectMeta(req.params.id);
     const files = await minio.listFiles(req.params.id);
     return res.json({ files });
   } catch {
@@ -96,7 +94,6 @@ router.put('/:id/files/*', async (req, res) => {
   const { content } = req.body;
   if (content === undefined) return res.status(400).json({ error: 'content is required' });
   try {
-    await minio.getProjectMeta(req.params.id); // verify project exists
     await minio.putFile(req.params.id, filePath, content);
     return res.status(204).send();
   } catch {
@@ -116,9 +113,31 @@ router.delete('/:id/files/*', async (req, res) => {
   }
 });
 
-// POST /projects/:id/deploy  — stubbed; implemented in Phase 2
+// POST /projects/:id/deploy
+// Full streaming: MinIO streams → archiver → FormData → backend HTTP POST
+// No ZIP ever materialises fully in RAM — archiver output is chunked directly into the request body
 router.post('/:id/deploy', async (req, res) => {
-  return res.status(501).json({ error: 'Deploy not yet implemented (Phase 2)' });
+  const { id } = req.params;
+  const files = await minio.listFiles(id);
+  if (!files.length) return res.status(400).json({ error: 'Project has no files' });
+
+  // archiver is a Readable stream — append each MinIO file stream directly, no buffering
+  const archive = archiver('zip');
+  archive.on('error', err => { throw err; });
+
+  for (const filePath of files) {
+    const fileStream = await minio.getFileStream(id, filePath);
+    archive.append(fileStream, { name: filePath });
+  }
+  archive.finalize();
+
+  // Pipe archiver output directly into the multipart form body.
+  // axios sends with chunked transfer encoding — no Content-Length needed.
+  const form = new FormData();
+  form.append('files', archive, { filename: `${id}.zip`, contentType: 'application/zip' });
+
+  const result = await backend.deployProjectForm(id, form);
+  return res.status(202).json(result);
 });
 
 module.exports = { router };
