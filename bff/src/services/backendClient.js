@@ -32,4 +32,9 @@ async function deployProjectForm(projectId, form) {
   return data; // { executableProjectId }
 }
 
-module.exports = { createProject, listProjects, getProject, deleteProject, deployProjectForm };
+async function getDeploymentSteps(executableProjectId) {
+  const { data } = await http.get(`/api/deployments/${executableProjectId}/steps`);
+  return data; // array of DeploymentStep objects
+}
+
+module.exports = { createProject, listProjects, getProject, deleteProject, deployProjectForm, getDeploymentSteps };
