@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { router: sessionsRouter } = require('./routes/sessions');
 const { router: projectsRouter } = require('./routes/projects');
+const { router: deploymentsRouter } = require('./routes/deployments');
 const { attachPtyProxy } = require('./proxy/ptyProxy');
 const { ensureBucket, initProjectMappings } = require('./services/minioClient');
 const backend = require('./services/backendClient');
@@ -16,6 +17,7 @@ app.use(express.json());
 // REST routes
 app.use('/sessions', sessionsRouter);
 app.use('/projects', projectsRouter);
+app.use('/deployments', deploymentsRouter);
 
 // Single http.Server so that Express (HTTP) and the WS proxy share the same port
 const server = http.createServer(app);
