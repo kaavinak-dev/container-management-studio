@@ -1,2 +1,0 @@
-[stub-bff] Mock BFF listening on http://localhost:3000
-[stub-bff] All MinIO/backend calls replaced with in-memory mock data.
