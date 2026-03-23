@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "BFF Dev Server",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd bff && node --watch src/index.js"],
+      "port": 3000
+    },
+    {
+      "name": "BFF Stub (preview-safe)",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd bff && node stub.js"],
+      "port": 3000
+    },
+    {
+      "name": "Web App (Next.js)",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd web && npx next dev -p 3001"],
+      "port": 3001
+    }
+  ]
+}
