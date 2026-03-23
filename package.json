@@ -6,6 +6,8 @@
     "dev:bff":     "cd bff && npm run dev",
     "dev:web":     "cd web && npm run dev",
     "dev":         "npm run dev:bff & npm run dev:web",
+    "dev:stub":    "node bff/stub.js",
+    "dev:preview": "npm run dev:stub & npm run dev:web",
     "build:web":   "cd web && npm run build",
     "start:bff":   "cd bff && node src/index.js",
     "install:all": "cd bff && npm install && cd ../web && npm install"
