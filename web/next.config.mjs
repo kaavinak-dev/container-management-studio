@@ -26,9 +26,10 @@ const nextConfig = {
       { source: '/deployments/:id/steps',             destination: `${BFF_URL}/deployments/:id/steps` },
       { source: '/deployments/:id/steps/stream',      destination: `${BFF_URL}/deployments/:id/steps/stream` },
 
-      // REST: editor sessions + heartbeat
-      { source: '/editor-sessions',                   destination: `${BFF_URL}/editor-sessions` },
-      { source: '/editor-sessions/:projectId/heartbeat', destination: `${BFF_URL}/editor-sessions/:projectId/heartbeat` },
+      // REST: editor sessions + heartbeat + terminal
+      { source: '/editor-sessions',                          destination: `${BFF_URL}/editor-sessions` },
+      { source: '/editor-sessions/:projectId/heartbeat',     destination: `${BFF_URL}/editor-sessions/:projectId/heartbeat` },
+      { source: '/editor-sessions/:projectId/terminal',      destination: `${BFF_URL}/editor-sessions/:projectId/terminal` },
     ]
   },
 }

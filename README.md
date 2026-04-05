@@ -56,7 +56,7 @@ Content-Type: application/json
 
 {
   "host": "172.17.0.5",
-  "port": 8080,
+  "port": 9999,
   "label": "John's Container"
 }
 ```

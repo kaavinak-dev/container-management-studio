@@ -1,5 +1,7 @@
 const { Router } = require('express');
-const { ensureSession, touchSession } = require('../services/editorSessionManager');
+const { v4: uuidv4 } = require('uuid');
+const { ensureSession, touchSession, sessions: editorSessions } = require('../services/editorSessionManager');
+const { sessions: proxySessions } = require('./sessions');
 
 const router = Router();
 
@@ -25,6 +27,32 @@ router.post('/', async (req, res) => {
 router.post('/:projectId/heartbeat', (req, res) => {
   touchSession(req.params.projectId);
   return res.sendStatus(200);
+});
+
+// POST /editor-sessions/:projectId/terminal
+// Creates a PTY proxy session for the editor container and returns a sessionId.
+// The browser connects to ws(s)://host/proxy/:sessionId to get a live bash shell.
+// Awaits ensureSession so it blocks naturally if the container is still starting,
+// rather than doing a blind Map lookup that would return 404 during cold start.
+router.post('/:projectId/terminal', async (req, res) => {
+  const { projectId } = req.params;
+
+  let session;
+  try {
+    session = await ensureSession(projectId);
+  } catch (err) {
+    console.error('[editor-sessions] ensureSession failed for terminal:', err.message);
+    return res.status(502).json({ error: 'Failed to start editor session', detail: err.message });
+  }
+
+  const sessionId = uuidv4();
+  proxySessions.set(sessionId, {
+    host:  session.containerIp,
+    port:  session.ptyPort,
+    label: `editor-pty-${projectId}`,
+  });
+
+  return res.json({ sessionId });
 });
 
 module.exports = { router };

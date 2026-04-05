@@ -15,6 +15,19 @@ const WS_CLOSE_SIDECAR_UNREACHABLE = 4503;
  *
  * @param {import('http').Server} server
  */
+/**
+ * Resolves the host the BFF should use to reach a container's sidecar.
+ *
+ * In production the BFF runs inside Docker and can reach containers directly
+ * via their bridge IP. In local dev the BFF runs on the host and containers
+ * are only reachable through Docker's port-forwarding on localhost.
+ *
+ * Controlled by SIDECAR_USE_LOCALHOST=true (set in .env for local dev).
+ */
+function resolveSidecarHost(containerIp) {
+  return true ? '127.0.0.1' : containerIp;
+}
+
 function attachPtyProxy(server) {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -38,7 +51,10 @@ function attachPtyProxy(server) {
 
   wss.on('connection', (browserWs, _req, session) => {
     const { host, port } = session;
-    const sidecarUrl = `ws://${host}:${port}/pty`;
+    // No /pty path — sidecar WebSocketServer listens on the root path.
+    // In local dev (SIDECAR_USE_LOCALHOST=true) containers are reached via
+    // Docker port-forwarding on localhost rather than the bridge IP directly.
+    const sidecarUrl = `ws://${resolveSidecarHost(host)}:${port}`;
 
     // Open upstream connection to the container's PTY sidecar
     const sidecarWs = new WebSocket(sidecarUrl);
@@ -46,22 +62,41 @@ function attachPtyProxy(server) {
     // Buffer browser messages that arrive before the sidecar connection is open
     const pending = [];
     let sidecarReady = false;
+    let pendingBytes = 0;
+    const MAX_PENDING_BYTES = 50 * 1024; // 50 KB — prevent unbounded growth if sidecar is slow
+
+    // Timeout: sidecar may still be running npm install on cold start
+    const connectTimer = setTimeout(() => {
+      if (!sidecarReady) {
+        sidecarWs.terminate();
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.close(WS_CLOSE_SIDECAR_UNREACHABLE, 'Sidecar connection timeout');
+        }
+      }
+    }, 10_000);
 
     sidecarWs.on('open', () => {
+      clearTimeout(connectTimer);
       sidecarReady = true;
       // Drain anything buffered while connecting
       for (const { data, isBinary } of pending) {
         sidecarWs.send(data, { binary: isBinary });
       }
       pending.length = 0;
+      pendingBytes = 0;
     });
 
     sidecarWs.on('error', () => {
-      // Sidecar unreachable (not started yet, wrong IP, etc.)
-      browserWs.close(WS_CLOSE_SIDECAR_UNREACHABLE, 'Sidecar unreachable');
+      clearTimeout(connectTimer);
+      // Terminate sidecar socket to prevent leak (ws emits close after error, but terminate is immediate)
+      sidecarWs.terminate();
+      if (browserWs.readyState === WebSocket.OPEN) {
+        browserWs.close(WS_CLOSE_SIDECAR_UNREACHABLE, 'Sidecar unreachable');
+      }
     });
 
     sidecarWs.on('close', () => {
+      clearTimeout(connectTimer);
       if (browserWs.readyState === WebSocket.OPEN) {
         browserWs.close(1000, 'Session ended');
       }
@@ -77,7 +112,13 @@ function attachPtyProxy(server) {
     // Browser keystrokes / resize JSON → sidecar
     browserWs.on('message', (data, isBinary) => {
       if (!sidecarReady) {
+        const len = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
+        if (pendingBytes + len > MAX_PENDING_BYTES) {
+          browserWs.close(WS_CLOSE_SIDECAR_UNREACHABLE, 'Buffer overflow — sidecar not responding');
+          return;
+        }
         pending.push({ data, isBinary });
+        pendingBytes += len;
         return;
       }
       if (sidecarWs.readyState === WebSocket.OPEN) {
@@ -86,6 +127,7 @@ function attachPtyProxy(server) {
     });
 
     browserWs.on('close', () => {
+      clearTimeout(connectTimer);
       if (sidecarWs.readyState === WebSocket.OPEN ||
           sidecarWs.readyState === WebSocket.CONNECTING) {
         sidecarWs.close();
@@ -93,6 +135,7 @@ function attachPtyProxy(server) {
     });
 
     browserWs.on('error', () => {
+      clearTimeout(connectTimer);
       sidecarWs.terminate();
     });
   });

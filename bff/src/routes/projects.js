@@ -1,8 +1,6 @@
 const { Router } = require('express');
-const axios = require('axios');
 const minio = require('../services/minioClient');
 const backend = require('../services/backendClient');
-const editorSessionManager = require('../services/editorSessionManager');
 const archiver = require('archiver');
 const FormData = require('form-data');
 
@@ -99,18 +97,6 @@ router.put('/:id/files/*', async (req, res) => {
   if (content === undefined) return res.status(400).json({ error: 'content is required' });
   try {
     await minio.putFile(req.params.id, filePath, content);
-    console.log("put data");
-
-    // Dual-write to live editor container (fire-and-forget, best-effort)
-    const session = editorSessionManager.sessions.get(req.params.id);
-    if (session) {
-
-      axios.put(
-        `http://${session.containerIp}:${session.fileApiPort}/files/${filePath}`,
-        content,
-        { headers: { 'Content-Type': 'text/plain' } }
-      ).catch((err) => console.error('[dual-write] PUT to container failed (non-fatal):', err.message));
-    }
 
     return res.status(204).send();
   } catch {
@@ -125,13 +111,6 @@ router.delete('/:id/files/*', async (req, res) => {
   if (!isValidPath(filePath)) return res.status(400).json({ error: 'Invalid path' });
   try {
     await minio.deleteFile(req.params.id, filePath);
-
-    // Dual-write delete to live editor container (fire-and-forget, best-effort)
-    const session = editorSessionManager.sessions.get(req.params.id);
-    if (session) {
-      axios.delete(`http://${session.containerIp}:${session.fileApiPort}/files/${filePath}`)
-        .catch((err) => console.error('[dual-write] DELETE to container failed (non-fatal):', err.message));
-    }
 
     return res.status(204).send();
   } catch {

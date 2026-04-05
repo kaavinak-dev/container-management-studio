@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { ArrowLeft, Rocket } from "lucide-react"
 import { projectAPI } from "@/lib/api"
 import type { Project, ProjectFile, ProjectStatus } from "@/lib/store"
@@ -66,15 +66,14 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
     }
   }, [project.id])
 
-  function handleFileChange(content: string) {
-    const updated = files.map((f) =>
-      f.name === activeFileName ? { ...f, content } : f
+  const handleFileChange = useCallback((content: string) => {
+    setFiles((prev) =>
+      prev.map((f) => (f.name === activeFileName ? { ...f, content } : f))
     )
-    setFiles(updated)
     setDirtyFiles((prev) => new Set(prev).add(activeFileName))
-  }
+  }, [activeFileName])
 
-  async function handleSave() {
+  const handleSave = useCallback(async () => {
     if (!activeFile || !isActiveDirty) return
     try {
       await projectAPI.putFile(project.id, activeFileName, activeFile.content)
@@ -87,7 +86,7 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
     } catch (error) {
       console.error("Failed to save file:", error)
     }
-  }
+  }, [activeFile, isActiveDirty, project, activeFileName, files, onProjectUpdate])
 
   function handleSelectFile(name: string) {
     setActiveFileName(name)
@@ -247,7 +246,6 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
             </div>
             <TerminalPanel
               projectId={project.id}
-              status={status}
               isOpen={terminalOpen}
               onToggle={() => setTerminalOpen((o) => !o)}
             />

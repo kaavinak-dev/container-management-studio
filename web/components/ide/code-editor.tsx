@@ -177,6 +177,12 @@ export function CodeEditor({ projectId, file, allFiles, onChange, onSave, isDirt
   const [loadingMessage, setLoadingMessage] = useState("Starting workspace...")
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Use a ref to store the latest onSave callback to avoid stale closures in Monaco commands
+  const onSaveRef = useRef(onSave)
+  useEffect(() => {
+    onSaveRef.current = onSave
+  }, [onSave])
+
   const monacoLanguage: MonacoLanguageId =
     file.language === "json" ? "json"
     : file.language === "typescript" || file.name.endsWith(".ts") ? "typescript"
@@ -250,10 +256,12 @@ export function CodeEditor({ projectId, file, allFiles, onChange, onSave, isDirt
     (editor: editor.IStandaloneCodeEditor, monaco: Monaco) => {
       editorRef.current = editor
 
-      // Ctrl+S to save
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSave())
+      // Ctrl+S to save - use the ref to always call the latest handleSave from IDEView
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+        onSaveRef.current()
+      })
     },
-    [onSave]
+    [] // No dependencies needed as we use the stable ref
   )
 
   function handleEditorChange(value: string | undefined) {
