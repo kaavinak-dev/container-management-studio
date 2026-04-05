@@ -1,13 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { ArrowLeft, Rocket } from "lucide-react"
+import { projectAPI } from "@/lib/api"
 import type { Project, ProjectFile, ProjectStatus } from "@/lib/store"
 import { StatusBadge } from "@/components/status-badge"
 import { FileTree } from "@/components/ide/file-tree"
 import { CodeEditor } from "@/components/ide/code-editor"
 import { TerminalPanel } from "@/components/ide/terminal"
 import { DeployModal } from "@/components/ide/deploy-modal"
+
 
 interface IDEViewProps {
   project: Project
@@ -25,27 +27,73 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
     project.status === "deploying"
   )
   const [status, setStatus] = useState<ProjectStatus>(project.status)
-  const [hasUnsaved, setHasUnsaved] = useState(false)
+  const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(new Set())
 
   const activeFile = files.find((f) => f.name === activeFileName) ?? files[0]
+  const isActiveDirty = dirtyFiles.has(activeFileName)
+
+  // Lazy-load file contents from backend when IDE opens
+  useEffect(() => {
+    async function loadFileContents() {
+      try {
+        const fileList = await projectAPI.listFiles(project.id)
+        const filesWithContent = await Promise.all(
+          fileList.files.map(async (fileName) => {
+            const { content } = await projectAPI.getFile(project.id, fileName)
+            const ext = fileName.split(".").pop()
+            const language =
+              ext === "js" || ext === "ts" || ext === "jsx" || ext === "tsx"
+                ? "javascript"
+                : ext === "json"
+                ? "json"
+                : "text"
+            return { name: fileName, content, language }
+          })
+        )
+        setFiles(filesWithContent)
+        setActiveFileName(filesWithContent[0]?.name ?? "")
+        // Sync back to parent so project state is cached
+        onProjectUpdate({ ...project, files: filesWithContent })
+      } catch (error) {
+        console.error("Failed to load file contents:", error)
+      }
+    }
+
+    // Load if files are missing or content hasn't been loaded yet
+    const hasEmptyFiles = files.length === 0 || files.some(f => f.content === "")
+    if (hasEmptyFiles) {
+      loadFileContents()
+    }
+  }, [project.id])
 
   function handleFileChange(content: string) {
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.name === activeFileName ? { ...f, content } : f
-      )
-    )
-    setHasUnsaved(true)
-    onProjectUpdate({ ...project, files: files.map((f) =>
+    const updated = files.map((f) =>
       f.name === activeFileName ? { ...f, content } : f
-    )})
+    )
+    setFiles(updated)
+    setDirtyFiles((prev) => new Set(prev).add(activeFileName))
+  }
+
+  async function handleSave() {
+    if (!activeFile || !isActiveDirty) return
+    try {
+      await projectAPI.putFile(project.id, activeFileName, activeFile.content)
+      setDirtyFiles((prev) => {
+        const next = new Set(prev)
+        next.delete(activeFileName)
+        return next
+      })
+      onProjectUpdate({ ...project, files })
+    } catch (error) {
+      console.error("Failed to save file:", error)
+    }
   }
 
   function handleSelectFile(name: string) {
     setActiveFileName(name)
   }
 
-  function handleCreateFile(name: string) {
+  async function handleCreateFile(name: string) {
     const ext = name.split(".").pop()
     const lang =
       ext === "js" || ext === "ts" || ext === "jsx" || ext === "tsx"
@@ -57,29 +105,57 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
     const updated = [...files, newFile]
     setFiles(updated)
     setActiveFileName(name)
-    onProjectUpdate({ ...project, files: updated })
+
+    try {
+      await projectAPI.putFile(project.id, name, "")
+      onProjectUpdate({ ...project, files: updated })
+    } catch (error) {
+      console.error("Failed to create file:", error)
+      setFiles(files)
+      setActiveFileName(files[0]?.name ?? "")
+    }
   }
 
-  function handleDeleteFile(name: string) {
+  async function handleDeleteFile(name: string) {
     const updated = files.filter((f) => f.name !== name)
     setFiles(updated)
     if (activeFileName === name) {
       setActiveFileName(updated[0]?.name ?? "")
     }
-    onProjectUpdate({ ...project, files: updated })
+
+    try {
+      await projectAPI.deleteFile(project.id, name)
+      onProjectUpdate({ ...project, files: updated })
+    } catch (error) {
+      console.error("Failed to delete file:", error)
+      setFiles(files)
+      setActiveFileName(name)
+    }
   }
 
-  function handleRenameFile(oldName: string, newName: string) {
+  async function handleRenameFile(oldName: string, newName: string) {
     const updated = files.map((f) =>
       f.name === oldName ? { ...f, name: newName } : f
     )
     setFiles(updated)
     if (activeFileName === oldName) setActiveFileName(newName)
-    onProjectUpdate({ ...project, files: updated })
+
+    try {
+      const file = files.find((f) => f.name === oldName)
+      if (file) {
+        await projectAPI.putFile(project.id, newName, file.content)
+        await projectAPI.deleteFile(project.id, oldName)
+        onProjectUpdate({ ...project, files: updated })
+      }
+    } catch (error) {
+      console.error("Failed to rename file:", error)
+      setFiles(files)
+      setActiveFileName(oldName)
+    }
   }
 
   function handleBack() {
-    if (hasUnsaved) {
+    if (dirtyFiles.size > 0) {
       if (window.confirm("You have unsaved changes. Leave anyway?")) {
         onBack()
       }
@@ -148,6 +224,12 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
             <div className="flex items-center bg-[#2d2d2d] border-b border-[#3c3c3c] flex-shrink-0 h-9">
               <div className="flex items-center gap-2 px-4 py-1.5 text-xs text-[#d4d4d4] bg-[#1e1e1e] border-r border-[#3c3c3c] border-t-2 border-t-[#007acc] font-mono">
                 {activeFile.name}
+                {isActiveDirty && (
+                  <span
+                    className="w-2 h-2 rounded-full bg-[#d4d4d4] inline-block flex-shrink-0"
+                    title="Unsaved changes — press Ctrl+S to save"
+                  />
+                )}
               </div>
             </div>
           )}
@@ -156,7 +238,7 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-hidden">
               {activeFile ? (
-                <CodeEditor file={activeFile} onChange={handleFileChange} />
+                <CodeEditor projectId={project.id} file={activeFile} allFiles={files} onChange={handleFileChange} onSave={handleSave} isDirty={isActiveDirty} />
               ) : (
                 <div className="flex items-center justify-center h-full text-[#555] text-sm">
                   Select or create a file
@@ -176,6 +258,7 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
       {/* Deploy modal */}
       {showDeploy && (
         <DeployModal
+          projectId={project.id}
           projectName={project.name}
           onClose={() => setShowDeploy(false)}
           onSuccess={handleDeploySuccess}

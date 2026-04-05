@@ -2,13 +2,16 @@
 
 import { useState } from "react"
 import { X, ChevronLeft, Loader2 } from "lucide-react"
-import type { Project, BaseOS } from "@/lib/store"
-import { generateId } from "@/lib/store"
+import type { BaseOS } from "@/lib/store"
 import { cn } from "@/lib/utils"
 
 interface CreateProjectModalProps {
   onClose: () => void
-  onCreate: (project: Project) => void
+  onCreate: (payload: {
+    name: string
+    baseOS: BaseOS
+    nodeVersion: string
+  }) => void | Promise<void>
 }
 
 type Step = 1 | 2
@@ -21,7 +24,7 @@ export function CreateProjectModal({ onClose, onCreate }: CreateProjectModalProp
   const [loading, setLoading] = useState(false)
   const [nameError, setNameError] = useState("")
 
-  function handleCreate() {
+  async function handleCreate() {
     if (!projectName.trim()) {
       setNameError("Project name is required")
       return
@@ -33,51 +36,18 @@ export function CreateProjectModal({ onClose, onCreate }: CreateProjectModalProp
     setNameError("")
     setLoading(true)
 
-    setTimeout(() => {
-      const newProject: Project = {
-        id: generateId(),
+    try {
+      await onCreate({
         name: projectName.trim(),
-        type: "nodejs",
-        status: "draft",
-        createdAt: new Date(),
-        nodeVersion,
         baseOS,
-        files: [
-          {
-            name: "index.js",
-            language: "javascript",
-            content: `const http = require('http');
-
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Hello from ${projectName.trim()}!\\n');
-});
-
-server.listen(3000, () => {
-  console.log('Simple Node App listening on port 3000');
-});
-`,
-          },
-          {
-            name: "package.json",
-            language: "json",
-            content: JSON.stringify(
-              {
-                name: projectName.trim(),
-                version: "1.0.0",
-                main: "index.js",
-                scripts: { start: "node index.js" },
-                dependencies: {},
-              },
-              null,
-              2
-            ) + "\n",
-          },
-        ],
-      }
+        nodeVersion,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create project"
+      setNameError(message)
+    } finally {
       setLoading(false)
-      onCreate(newProject)
-    }, 1800)
+    }
   }
 
   return (

@@ -1,340 +1,325 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
+import Editor, { type Monaco } from "@monaco-editor/react"
+import type { editor } from "monaco-editor"
 import type { ProjectFile } from "@/lib/store"
-import { cn } from "@/lib/utils"
+
+// ---------------------------------------------------------------------------
+// Module-level state — survives React remounts
+// ---------------------------------------------------------------------------
+
+let monacoInstance: Monaco | null = null
+let ataInitialized = false
+
+// Map of extra-lib disposables so we can update them on file changes
+const extraLibDisposables = new Map<string, { dispose(): void }>()
+
+function getLanguageId(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toLowerCase()
+  if (ext === "ts" || ext === "tsx") return "typescript"
+  if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") return "javascript"
+  if (ext === "json") return "json"
+  if (ext === "css") return "css"
+  if (ext === "html") return "html"
+  if (ext === "md") return "markdown"
+  return "plaintext"
+}
+
+// ---------------------------------------------------------------------------
+// Configure Monaco's built-in TypeScript/JavaScript language service
+// ---------------------------------------------------------------------------
+
+function configureTypeScriptDefaults(monaco: Monaco) {
+  const jsDefaults = monaco.languages.typescript.javascriptDefaults
+  const tsDefaults = monaco.languages.typescript.typescriptDefaults
+
+  const sharedCompilerOptions: import("monaco-editor").languages.typescript.CompilerOptions = {
+    target: monaco.languages.typescript.ScriptTarget.ES2020,
+    module: monaco.languages.typescript.ModuleKind.CommonJS,
+    moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+    allowJs: true,
+    checkJs: true,
+    noEmit: true,
+    allowSyntheticDefaultImports: true,
+    esModuleInterop: true,
+    strict: false,
+    skipLibCheck: true,
+    resolveJsonModule: true,
+    // The base URL tells the TS worker where to resolve bare imports from
+    baseUrl: "file:///workspace",
+  }
+
+  jsDefaults.setCompilerOptions(sharedCompilerOptions)
+  tsDefaults.setCompilerOptions(sharedCompilerOptions)
+
+  jsDefaults.setDiagnosticsOptions({
+    noSemanticValidation: false,
+    noSyntaxValidation: false,
+  })
+  tsDefaults.setDiagnosticsOptions({
+    noSemanticValidation: false,
+    noSyntaxValidation: false,
+  })
+
+  // Enable eager model sync so cross-file go-to-definition works
+  jsDefaults.setEagerModelSync(true)
+  tsDefaults.setEagerModelSync(true)
+}
+
+// ---------------------------------------------------------------------------
+// Load all project files as Monaco models (enables cross-file references)
+// ---------------------------------------------------------------------------
+
+function syncProjectModels(monaco: Monaco, files: ProjectFile[]) {
+  const fileUris = new Set<string>()
+
+  for (const f of files) {
+    const uri = monaco.Uri.parse(`file:///workspace/${f.name}`)
+    const uriStr = uri.toString()
+    fileUris.add(uriStr)
+
+    const existing = monaco.editor.getModel(uri)
+    if (existing) {
+      // Update content if it changed (avoid resetting cursor in active editor)
+      if (existing.getValue() !== f.content) {
+        existing.setValue(f.content)
+      }
+    } else {
+      monaco.editor.createModel(f.content, getLanguageId(f.name), uri)
+    }
+  }
+
+  // Dispose models for files that no longer exist
+  for (const model of monaco.editor.getModels()) {
+    const uriStr = model.uri.toString()
+    if (uriStr.startsWith("file:///workspace/") && !fileUris.has(uriStr)) {
+      model.dispose()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Automatic Type Acquisition (ATA) — fetches @types/* from npm CDN
+// ---------------------------------------------------------------------------
+
+async function initAta(monaco: Monaco) {
+  if (ataInitialized) return
+  ataInitialized = true
+
+  try {
+    const ts = await import("typescript")
+    const { setupTypeAcquisition } = await import("@typescript/ata")
+
+    const ata = setupTypeAcquisition({
+      projectName: "workspace",
+      typescript: ts,
+      delegate: {
+        receivedFile: (code: string, path: string) => {
+          // Dispose previous version of this lib if it exists
+          extraLibDisposables.get(path)?.dispose()
+          const disposable = monaco.languages.typescript.javascriptDefaults.addExtraLib(
+            code,
+            `file://${path}`
+          )
+          extraLibDisposables.set(path, disposable)
+          // Also add to TypeScript defaults
+          monaco.languages.typescript.typescriptDefaults.addExtraLib(
+            code,
+            `file://${path}`
+          )
+        },
+      },
+    })
+
+    // Scan all current models for imports
+    for (const model of monaco.editor.getModels()) {
+      const lang = model.getLanguageId()
+      if (lang === "javascript" || lang === "typescript") {
+        ata(model.getValue())
+      }
+    }
+
+    // Store ata on the module level so we can call it on content changes
+    ;(globalThis as any).__ata = ata
+  } catch (err) {
+    console.warn("[editor] ATA init failed (non-fatal — completions still work for local code):", err)
+  }
+}
+
+// Debounced ATA trigger
+let ataTimeout: ReturnType<typeof setTimeout> | null = null
+function triggerAta(content: string) {
+  const ata = (globalThis as any).__ata
+  if (!ata) return
+  if (ataTimeout) clearTimeout(ataTimeout)
+  ataTimeout = setTimeout(() => ata(content), 1500)
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 interface CodeEditorProps {
+  projectId: string
   file: ProjectFile
+  allFiles: ProjectFile[]
   onChange: (content: string) => void
+  onSave: () => void
+  isDirty: boolean
 }
 
-type SaveState = "idle" | "saving" | "saved"
+type MonacoLanguageId = "json" | "typescript" | "javascript" | "text"
 
-// Token types for our syntax highlighter
-type TokenType =
-  | "keyword"
-  | "string"
-  | "comment"
-  | "number"
-  | "punctuation"
-  | "function"
-  | "property"
-  | "default"
-  | "json-key"
-  | "json-string"
-  | "json-number"
-  | "json-boolean"
+export function CodeEditor({ projectId, file, allFiles, onChange, onSave, isDirty }: CodeEditorProps) {
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(true)
+  const [loadingMessage, setLoadingMessage] = useState("Starting workspace...")
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-interface Token {
-  type: TokenType
-  value: string
-}
+  const monacoLanguage: MonacoLanguageId =
+    file.language === "json" ? "json"
+    : file.language === "typescript" || file.name.endsWith(".ts") ? "typescript"
+    : file.language === "javascript" ? "javascript"
+    : "text"
 
-const JS_KEYWORDS = new Set([
-  "const","let","var","function","return","if","else","for","while","do",
-  "switch","case","break","continue","new","this","class","extends",
-  "import","export","default","from","require","module","async","await",
-  "try","catch","finally","throw","typeof","instanceof","in","of","null",
-  "undefined","true","false","void","delete","yield","static","super",
-])
-
-function tokenizeJS(line: string): Token[] {
-  const tokens: Token[] = []
-  let i = 0
-
-  while (i < line.length) {
-    // Line comment
-    if (line[i] === "/" && line[i + 1] === "/") {
-      tokens.push({ type: "comment", value: line.slice(i) })
-      break
-    }
-    // String (single / double / template)
-    if (line[i] === '"' || line[i] === "'" || line[i] === "`") {
-      const quote = line[i]
-      let j = i + 1
-      while (j < line.length) {
-        if (line[j] === "\\" ) { j += 2; continue }
-        if (line[j] === quote) { j++; break }
-        j++
-      }
-      tokens.push({ type: "string", value: line.slice(i, j) })
-      i = j
-      continue
-    }
-    // Number
-    if (/[0-9]/.test(line[i]) && (i === 0 || /\W/.test(line[i - 1]))) {
-      let j = i
-      while (j < line.length && /[0-9.]/.test(line[j])) j++
-      tokens.push({ type: "number", value: line.slice(i, j) })
-      i = j
-      continue
-    }
-    // Punctuation
-    if (/[{}[\]().,;:=+\-*/<>!&|^~%?]/.test(line[i])) {
-      tokens.push({ type: "punctuation", value: line[i] })
-      i++
-      continue
-    }
-    // Word (keyword or identifier)
-    if (/[a-zA-Z_$]/.test(line[i])) {
-      let j = i
-      while (j < line.length && /[a-zA-Z0-9_$]/.test(line[j])) j++
-      const word = line.slice(i, j)
-      if (JS_KEYWORDS.has(word)) {
-        tokens.push({ type: "keyword", value: word })
-      } else if (j < line.length && line[j] === "(") {
-        tokens.push({ type: "function", value: word })
-      } else if (i > 0 && line[i - 1] === ".") {
-        tokens.push({ type: "property", value: word })
-      } else {
-        tokens.push({ type: "default", value: word })
-      }
-      i = j
-      continue
-    }
-    // Default: whitespace etc.
-    tokens.push({ type: "default", value: line[i] })
-    i++
-  }
-  return tokens
-}
-
-function tokenizeJSON(line: string): Token[] {
-  const tokens: Token[] = []
-  const trimmed = line.trimStart()
-  const leading = line.slice(0, line.length - trimmed.length)
-  if (leading) tokens.push({ type: "default", value: leading })
-
-  let i = 0
-  const t = trimmed
-  while (i < t.length) {
-    if (t[i] === '"') {
-      // Check if JSON key (followed by : after closing quote)
-      let j = i + 1
-      while (j < t.length && t[j] !== '"') {
-        if (t[j] === "\\") j++
-        j++
-      }
-      j++
-      const word = t.slice(i, j)
-      const rest = t.slice(j).trimStart()
-      if (rest[0] === ":") {
-        tokens.push({ type: "json-key", value: word })
-      } else {
-        tokens.push({ type: "json-string", value: word })
-      }
-      i = j
-      continue
-    }
-    if (/[0-9\-]/.test(t[i])) {
-      let j = i
-      while (j < t.length && /[0-9.eE+\-]/.test(t[j])) j++
-      tokens.push({ type: "json-number", value: t.slice(i, j) })
-      i = j
-      continue
-    }
-    if (t.slice(i).startsWith("true") || t.slice(i).startsWith("false") || t.slice(i).startsWith("null")) {
-      const word = t.slice(i).match(/^(true|false|null)/)![0]
-      tokens.push({ type: "json-boolean", value: word })
-      i += word.length
-      continue
-    }
-    tokens.push({ type: "punctuation", value: t[i] })
-    i++
-  }
-  return tokens
-}
-
-const TOKEN_COLORS: Record<TokenType, string> = {
-  keyword: "#569cd6",
-  string: "#ce9178",
-  comment: "#6a9955",
-  number: "#b5cea8",
-  punctuation: "#d4d4d4",
-  function: "#dcdcaa",
-  property: "#9cdcfe",
-  default: "#d4d4d4",
-  "json-key": "#9cdcfe",
-  "json-string": "#ce9178",
-  "json-number": "#b5cea8",
-  "json-boolean": "#569cd6",
-}
-
-function renderHighlightedLine(line: string, language: string, lineIdx: number) {
-  if (line === "") return <span key={lineIdx}>&nbsp;</span>
-  const tokens = language === "json" ? tokenizeJSON(line) : tokenizeJS(line)
-  return (
-    <span key={lineIdx}>
-      {tokens.map((tok, i) => (
-        <span key={i} style={{ color: TOKEN_COLORS[tok.type] }}>
-          {tok.value}
-        </span>
-      ))}
-    </span>
-  )
-}
-
-export function CodeEditor({ file, onChange }: CodeEditorProps) {
-  const [saveState, setSaveState] = useState<SaveState>("idle")
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const highlightRef = useRef<HTMLPreElement>(null)
-  const [cursor, setCursor] = useState({ line: 1, col: 1 })
-
-  const lines = file.content.split("\n")
-  const lineCount = lines.length
-
-  // Sync scroll between textarea and highlight
-  function syncScroll() {
-    if (textareaRef.current && highlightRef.current) {
-      highlightRef.current.scrollTop = textareaRef.current.scrollTop
-      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft
-    }
-  }
-
-  const triggerSave = useCallback(
-    (value: string) => {
-      setSaveState("saving")
-      if (saveTimer.current) clearTimeout(saveTimer.current)
-      saveTimer.current = setTimeout(() => {
-        onChange(value)
-        setSaveState("saved")
-        setTimeout(() => setSaveState("idle"), 2000)
-      }, 800)
-    },
-    [onChange]
-  )
-
-  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    triggerSave(e.target.value)
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Tab") {
-      e.preventDefault()
-      const ta = textareaRef.current!
-      const start = ta.selectionStart
-      const end = ta.selectionEnd
-      const newVal =
-        file.content.substring(0, start) + "  " + file.content.substring(end)
-      onChange(newVal)
-      requestAnimationFrame(() => {
-        ta.selectionStart = ta.selectionEnd = start + 2
-      })
-    }
-  }
-
-  function updateCursor() {
-    const ta = textareaRef.current
-    if (!ta) return
-    const text = ta.value.substring(0, ta.selectionStart)
-    const lineNum = text.split("\n").length
-    const colNum = text.split("\n").pop()!.length + 1
-    setCursor({ line: lineNum, col: colNum })
-  }
-
+  // Start editor session (container for terminal/runtime — not for LSP)
   useEffect(() => {
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current)
-    }
-  }, [])
+    let cancelled = false
 
-  const langLabel =
-    file.language === "javascript"
-      ? "JavaScript"
-      : file.language === "json"
-      ? "JSON"
-      : "Plain Text"
+    async function startSession() {
+      setSessionLoading(true)
+      setLoadingMessage("Starting workspace...")
+      try {
+        const res = await fetch("/editor-sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        })
+        if (!res.ok) {
+          let errorDetailsMessage = `HTTP ${res.status}`
+          try {
+            const errorBody = await res.json()
+            errorDetailsMessage = errorBody.message || JSON.stringify(errorBody)
+          } catch {
+            errorDetailsMessage = res.statusText || `HTTP ${res.status}`
+          }
+          throw new Error(`Session start failed: ${errorDetailsMessage}`)
+        }
+
+        if (cancelled) return
+        setSessionLoading(false)
+
+        // Start heartbeat
+        heartbeatRef.current = setInterval(() => {
+          fetch(`/editor-sessions/${projectId}/heartbeat`, { method: "POST" }).catch(() => {})
+        }, 60_000)
+      } catch (err: any) {
+        if (!cancelled) {
+          console.error("[editor] failed to start session:", err)
+          setLoadingMessage(`Failed to start workspace: ${err.message || "Unknown error"}. Check BFF logs.`)
+        }
+      }
+    }
+
+    startSession()
+
+    return () => {
+      cancelled = true
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current)
+    }
+  }, [projectId])
+
+  // Sync all project files as Monaco models whenever allFiles changes
+  useEffect(() => {
+    if (monacoInstance) {
+      syncProjectModels(monacoInstance, allFiles)
+    }
+  }, [allFiles])
+
+  // Called once when Monaco mounts
+  const handleEditorWillMount = useCallback((monaco: Monaco) => {
+    monacoInstance = monaco
+    configureTypeScriptDefaults(monaco)
+    syncProjectModels(monaco, allFiles)
+    initAta(monaco)
+  }, [allFiles])
+
+  // Called after editor mounts
+  const handleEditorDidMount = useCallback(
+    (editor: editor.IStandaloneCodeEditor, monaco: Monaco) => {
+      editorRef.current = editor
+
+      // Ctrl+S to save
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSave())
+    },
+    [onSave]
+  )
+
+  function handleEditorChange(value: string | undefined) {
+    if (value !== undefined) {
+      onChange(value)
+      // Trigger ATA to pick up new imports
+      if (monacoLanguage === "javascript" || monacoLanguage === "typescript") {
+        triggerAta(value)
+      }
+    }
+  }
+
+  if (sessionLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full bg-[#1e1e1e] text-white gap-3">
+        <div
+          className="rounded-full h-8 w-8 border-t-2 border-blue-400"
+          style={{ animation: "spin 1s linear infinite" }}
+        />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        <span className="text-sm text-gray-400">{loadingMessage}</span>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full bg-[#1e1e1e]">
-      {/* Editor area */}
-      <div className="flex flex-1 overflow-hidden relative">
-        {/* Line numbers */}
-        <div
-          className="flex-shrink-0 w-12 bg-[#1e1e1e] text-[#858585] text-xs font-mono pt-3 pb-3 text-right select-none overflow-hidden"
-          aria-hidden="true"
-        >
-          {Array.from({ length: lineCount }, (_, i) => (
-            <div key={i} className="leading-5 pr-3">
-              {i + 1}
-            </div>
-          ))}
-        </div>
-
-        {/* Highlight layer + textarea */}
-        <div className="relative flex-1 overflow-auto" onScroll={syncScroll}>
-          {/* Highlighted code (visual) */}
-          <pre
-            ref={highlightRef}
-            className="absolute inset-0 m-0 p-3 text-xs font-mono leading-5 whitespace-pre pointer-events-none overflow-hidden"
-            aria-hidden="true"
-          >
-            {lines.map((line, idx) => (
-              <div key={idx} className="leading-5">
-                {renderHighlightedLine(line, file.language, idx)}
-              </div>
-            ))}
-          </pre>
-
-          {/* Actual textarea (transparent, on top) */}
-          <textarea
-            ref={textareaRef}
-            value={file.content}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onScroll={syncScroll}
-            onClick={updateCursor}
-            onKeyUp={updateCursor}
-            spellCheck={false}
-            className="relative w-full h-full min-h-full p-3 text-xs font-mono leading-5 bg-transparent text-transparent caret-[#d4d4d4] resize-none outline-none border-0 whitespace-pre overflow-auto"
-            style={{ caretColor: "#d4d4d4" }}
-          />
-        </div>
-
-        {/* Minimap (decorative) */}
-        <div
-          className="w-20 flex-shrink-0 bg-[#1e1e1e] border-l border-[#3c3c3c] overflow-hidden opacity-60"
-          aria-hidden="true"
-        >
-          <div className="p-1">
-            {lines.slice(0, 80).map((line, i) => (
-              <div
-                key={i}
-                className="h-1.5 mb-px rounded-sm opacity-40"
-                style={{
-                  width: `${Math.min(line.length * 1.2, 64)}px`,
-                  backgroundColor:
-                    line.trimStart().startsWith("//")
-                      ? "#6a9955"
-                      : line.includes("function") || line.includes("const")
-                      ? "#569cd6"
-                      : "#d4d4d4",
-                }}
-              />
-            ))}
-          </div>
-        </div>
+      <div className="flex-1 overflow-hidden">
+        <Editor
+          height="100%"
+          language={monacoLanguage}
+          value={file.content}
+          path={`file:///workspace/${file.name}`}
+          theme="vs-dark"
+          options={{
+            fontSize: 13,
+            fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+            minimap: { enabled: true },
+            wordWrap: "on",
+            scrollBeyondLastLine: false,
+            renderLineHighlight: "all",
+            tabSize: 2,
+            quickSuggestions: true,
+            suggestOnTriggerCharacters: true,
+            parameterHints: { enabled: true },
+          }}
+          beforeMount={handleEditorWillMount}
+          onMount={handleEditorDidMount}
+          onChange={handleEditorChange}
+        />
       </div>
-
       {/* Status bar */}
       <div className="flex items-center justify-between px-4 py-0.5 bg-[#007acc] text-white text-xs font-mono flex-shrink-0">
         <div className="flex items-center gap-4">
-          <span>{langLabel}</span>
-          <span>UTF-8</span>
           <span>
-            Ln {cursor.line}, Col {cursor.col}
+            {monacoLanguage === "typescript"
+              ? "TypeScript"
+              : monacoLanguage === "javascript"
+              ? "JavaScript"
+              : monacoLanguage === "json"
+              ? "JSON"
+              : "Plain Text"}
           </span>
+          <span>UTF-8</span>
         </div>
-        <div>
-          {saveState === "saving" && (
-            <span className="text-blue-200">Saving…</span>
-          )}
-          {saveState === "saved" && (
-            <span className="text-green-300">Saved ✓</span>
-          )}
-        </div>
+        <div />
       </div>
     </div>
   )

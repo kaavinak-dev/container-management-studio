@@ -1,0 +1,9 @@
+{
+  "name": "editor-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "minio": "^7.1.3",
+    "ws": "^8.18.0"
+  }
+}

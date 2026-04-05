@@ -20,11 +20,7 @@ function attachPtyProxy(server) {
 
   server.on('upgrade', (req, socket, head) => {
     const match = req.url.match(/^\/proxy\/([^/?]+)/);
-    if (!match) {
-      // Not our path — let other upgrade handlers deal with it
-      socket.destroy();
-      return;
-    }
+    if (!match) return; // not our route — let other upgrade handlers deal with it
 
     const sessionId = match[1];
     const session = sessions.get(sessionId);

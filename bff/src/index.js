@@ -4,6 +4,7 @@ const cors = require('cors');
 const { router: sessionsRouter } = require('./routes/sessions');
 const { router: projectsRouter } = require('./routes/projects');
 const { router: deploymentsRouter } = require('./routes/deployments');
+const { router: editorSessionsRouter } = require('./routes/editorSessions');
 const { attachPtyProxy } = require('./proxy/ptyProxy');
 const { ensureBucket, initProjectMappings } = require('./services/minioClient');
 const backend = require('./services/backendClient');
@@ -18,6 +19,7 @@ app.use(express.json());
 app.use('/sessions', sessionsRouter);
 app.use('/projects', projectsRouter);
 app.use('/deployments', deploymentsRouter);
+app.use('/editor-sessions', editorSessionsRouter);
 
 // Single http.Server so that Express (HTTP) and the WS proxy share the same port
 const server = http.createServer(app);
@@ -26,7 +28,12 @@ const server = http.createServer(app);
 attachPtyProxy(server);
 
 (async () => {
-  await ensureBucket();
+  //await ensureBucket();
+  try {
+    await ensureBucket();
+    } catch (err) {
+      console.warn('[minio] could not ensure bucket on startup:', err.message);
+    }
 
   try {
     const projects = await backend.listProjects();

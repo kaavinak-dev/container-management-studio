@@ -6,10 +6,10 @@ const Minio = require('minio');
 const IS_DEV = process.env.NODE_ENV !== 'production';
 
 const DEV_SERVERS = [
-  { host: '192.168.99.101', port: 9002,
+  { host: '127.0.0.1', port: 9002,
     accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
     secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin' },
-  { host: '192.168.99.101', port: 9003,
+  { host: '127.0.0.1', port: 9003,
     accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
     secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin' },
 ];

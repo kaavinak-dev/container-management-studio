@@ -1,6 +1,8 @@
 const { Router } = require('express');
+const axios = require('axios');
 const minio = require('../services/minioClient');
 const backend = require('../services/backendClient');
+const editorSessionManager = require('../services/editorSessionManager');
 const archiver = require('archiver');
 const FormData = require('form-data');
 
@@ -29,11 +31,11 @@ router.post('/', async (req, res) => {
   minio.registerProject(projectId, storageUrl);
 
   const { files: templateFiles } = require('../templates/nodejs');
-  for (const [path, content] of Object.entries(templateFiles)) {
-    await minio.putFile(projectId, path, content);
-  }
+  const { initProjectFromTemplate } = require('../services/projectInitService');
+  await initProjectFromTemplate(projectId, templateFiles);
 
-  return res.status(201).json({ projectId, name, files: Object.keys(templateFiles) });
+  const allFiles = [...Object.keys(templateFiles), 'package-lock.json'];
+  return res.status(201).json({ projectId, name, files: allFiles });
 });
 
 // GET /projects
@@ -97,8 +99,22 @@ router.put('/:id/files/*', async (req, res) => {
   if (content === undefined) return res.status(400).json({ error: 'content is required' });
   try {
     await minio.putFile(req.params.id, filePath, content);
+    console.log("put data");
+
+    // Dual-write to live editor container (fire-and-forget, best-effort)
+    const session = editorSessionManager.sessions.get(req.params.id);
+    if (session) {
+
+      axios.put(
+        `http://${session.containerIp}:${session.fileApiPort}/files/${filePath}`,
+        content,
+        { headers: { 'Content-Type': 'text/plain' } }
+      ).catch((err) => console.error('[dual-write] PUT to container failed (non-fatal):', err.message));
+    }
+
     return res.status(204).send();
   } catch {
+    console.log("error data");
     return res.status(404).json({ error: 'Project not found' });
   }
 });
@@ -109,6 +125,14 @@ router.delete('/:id/files/*', async (req, res) => {
   if (!isValidPath(filePath)) return res.status(400).json({ error: 'Invalid path' });
   try {
     await minio.deleteFile(req.params.id, filePath);
+
+    // Dual-write delete to live editor container (fire-and-forget, best-effort)
+    const session = editorSessionManager.sessions.get(req.params.id);
+    if (session) {
+      axios.delete(`http://${session.containerIp}:${session.fileApiPort}/files/${filePath}`)
+        .catch((err) => console.error('[dual-write] DELETE to container failed (non-fatal):', err.message));
+    }
+
     return res.status(204).send();
   } catch {
     return res.status(404).json({ error: 'File not found' });
@@ -116,14 +140,14 @@ router.delete('/:id/files/*', async (req, res) => {
 });
 
 // POST /projects/:id/deploy
-// Full streaming: MinIO streams → archiver → FormData → backend HTTP POST
-// No ZIP ever materialises fully in RAM — archiver output is chunked directly into the request body
+// Buffer the archive into memory before forming the multipart request
+// Ensures FormData can properly serialize boundaries for the .NET backend
 router.post('/:id/deploy', async (req, res) => {
   const { id } = req.params;
   const files = await minio.listFiles(id);
+  console.log("files ", files)
   if (!files.length) return res.status(400).json({ error: 'Project has no files' });
 
-  // archiver is a Readable stream — append each MinIO file stream directly, no buffering
   const archive = archiver('zip');
   archive.on('error', err => { throw err; });
 
@@ -131,15 +155,34 @@ router.post('/:id/deploy', async (req, res) => {
     const fileStream = await minio.getFileStream(id, filePath);
     archive.append(fileStream, { name: filePath });
   }
-  archive.finalize();
 
-  // Pipe archiver output directly into the multipart form body.
-  // axios sends with chunked transfer encoding — no Content-Length needed.
-  const form = new FormData();
-  form.append('files', archive, { filename: `${id}.zip`, contentType: 'application/zip' });
+  // Collect archive chunks into a buffer
+  const chunks = [];
+  archive.on('data', chunk => chunks.push(chunk));
 
-  const result = await backend.deployProjectForm(id, form);
-  return res.status(202).json(result);
+  return new Promise((resolve, reject) => {
+    archive.on('end', async () => {
+      try {
+        const zipBuffer = Buffer.concat(chunks);
+        const form = new FormData();
+        form.append('files', zipBuffer, {
+          filename: `${id}.zip`,
+          contentType: 'application/zip'
+        });
+
+        console.log("form send")
+        const result = await backend.deployProjectForm(id, form);
+        console.log("result ", result)
+        res.status(202).json(result);
+        resolve();
+      } catch (err) {
+        console.log("error data");
+        reject(err);
+      }
+    });
+
+    archive.finalize();
+  });
 });
 
 module.exports = { router };

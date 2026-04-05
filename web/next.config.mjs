@@ -2,6 +2,7 @@
 const BFF_URL = process.env.BFF_URL ?? 'http://localhost:3000'
 
 const nextConfig = {
+  reactStrictMode:false,
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -24,6 +25,10 @@ const nextConfig = {
       // REST: deployments (includes SSE /stream route)
       { source: '/deployments/:id/steps',             destination: `${BFF_URL}/deployments/:id/steps` },
       { source: '/deployments/:id/steps/stream',      destination: `${BFF_URL}/deployments/:id/steps/stream` },
+
+      // REST: editor sessions + heartbeat
+      { source: '/editor-sessions',                   destination: `${BFF_URL}/editor-sessions` },
+      { source: '/editor-sessions/:projectId/heartbeat', destination: `${BFF_URL}/editor-sessions/:projectId/heartbeat` },
     ]
   },
 }

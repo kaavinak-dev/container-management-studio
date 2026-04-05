@@ -2,7 +2,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 const http = axios.create({
-  baseURL: process.env.CONTAINER_MANAGEMENT_URL || 'http://192.168.99.101:5000',
+  baseURL: process.env.CONTAINER_MANAGEMENT_URL || 'http://127.0.0.1:5235',
 });
 
 async function createProject(name, type = 'js') {
