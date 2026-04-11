@@ -2,7 +2,7 @@ const axios = require('axios');
 
 const BACKEND_URL = process.env.CONTAINER_MANAGEMENT_URL || 'http://127.0.0.1:5235';
 
-// Map<projectId, { containerIp, fileApiPort, ptyPort, lastActivity: Date }>
+// Map<projectId, { containerIp, ptyPort, agentId, containerId, lastActivity: Date }>
 const sessions = new Map();
 // Map<projectId, Promise> — deduplicates concurrent ensureSession calls for the same project
 const inFlight = new Map();
@@ -14,8 +14,6 @@ async function ensureSession(projectId) {
   }
 
   // Return the same promise if a backend call is already in progress for this project.
-  // Prevents duplicate container spin-ups and lets callers (e.g. terminal route) await
-  // the same promise instead of doing a blind Map lookup.
   if (inFlight.has(projectId)) {
     return inFlight.get(projectId);
   }
@@ -27,8 +25,9 @@ async function ensureSession(projectId) {
       console.log("Editor session started for projectId:", projectId, data);
       const session = {
         containerIp: data.containerIp,
-        fileApiPort: data.fileApiPort,
         ptyPort: data.ptyPort,
+        agentId: data.agentId,        // From .NET backend
+        containerId: data.containerId, // From .NET backend
         lastActivity: new Date(),
       };
       sessions.set(projectId, session);
@@ -46,7 +45,6 @@ function touchSession(projectId) {
   const session = sessions.get(projectId);
   if (!session) return;
   session.lastActivity = new Date();
-  // fire-and-forget — do not await or block on failures
   axios.put(`${BACKEND_URL}/api/editor-sessions/${projectId}/activity`).catch(() => {});
 }
 

@@ -28,13 +28,22 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
   )
   const [status, setStatus] = useState<ProjectStatus>(project.status)
   const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(new Set())
+  const [sessionReady, setSessionReady] = useState(false)
 
   const activeFile = files.find((f) => f.name === activeFileName) ?? files[0]
   const isActiveDirty = dirtyFiles.has(activeFileName)
 
-  // Lazy-load file contents from backend when IDE opens
+  // Step 1: ensure editor session is ready, then load file contents.
+  // sessionReady gates the terminal so it never races ensureSession.
   useEffect(() => {
-    async function loadFileContents() {
+    async function initSession() {
+      try {
+        await projectAPI.ensureSession(project.id)
+      } catch (error) {
+        console.error("Failed to initialize editor session:", error)
+        return
+      }
+
       try {
         const fileList = await projectAPI.listFiles(project.id)
         const filesWithContent = await Promise.all(
@@ -52,17 +61,22 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
         )
         setFiles(filesWithContent)
         setActiveFileName(filesWithContent[0]?.name ?? "")
-        // Sync back to parent so project state is cached
         onProjectUpdate({ ...project, files: filesWithContent })
       } catch (error) {
         console.error("Failed to load file contents:", error)
+      } finally {
+        setSessionReady(true)
       }
     }
 
-    // Load if files are missing or content hasn't been loaded yet
     const hasEmptyFiles = files.length === 0 || files.some(f => f.content === "")
     if (hasEmptyFiles) {
-      loadFileContents()
+      initSession()
+    } else {
+      // Files already cached — still ensure session before allowing terminal to connect
+      projectAPI.ensureSession(project.id)
+        .then(() => setSessionReady(true))
+        .catch(() => setSessionReady(true)) // best-effort; terminal will fail gracefully
     }
   }, [project.id])
 
@@ -247,6 +261,7 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
             <TerminalPanel
               projectId={project.id}
               isOpen={terminalOpen}
+              sessionReady={sessionReady}
               onToggle={() => setTerminalOpen((o) => !o)}
             />
           </div>

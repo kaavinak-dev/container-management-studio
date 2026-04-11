@@ -6,7 +6,6 @@ const { sessions: proxySessions } = require('./sessions');
 const router = Router();
 
 // POST /editor-sessions
-// Browser calls this when opening the editor. Blocks until container is ready (~3 min cold start).
 router.post('/', async (req, res) => {
   const { projectId } = req.body;
   if (!projectId) return res.status(400).json({ error: 'projectId is required' });
@@ -23,26 +22,18 @@ router.post('/', async (req, res) => {
 });
 
 // POST /editor-sessions/:projectId/heartbeat
-// Browser calls every 60 seconds to signal the user is still active.
 router.post('/:projectId/heartbeat', (req, res) => {
   touchSession(req.params.projectId);
   return res.sendStatus(200);
 });
 
 // POST /editor-sessions/:projectId/terminal
-// Creates a PTY proxy session for the editor container and returns a sessionId.
-// The browser connects to ws(s)://host/proxy/:sessionId to get a live bash shell.
-// Awaits ensureSession so it blocks naturally if the container is still starting,
-// rather than doing a blind Map lookup that would return 404 during cold start.
 router.post('/:projectId/terminal', async (req, res) => {
   const { projectId } = req.params;
 
-  let session;
-  try {
-    session = await ensureSession(projectId);
-  } catch (err) {
-    console.error('[editor-sessions] ensureSession failed for terminal:', err.message);
-    return res.status(502).json({ error: 'Failed to start editor session', detail: err.message });
+  const session = editorSessions.get(projectId);
+  if (!session) {
+    return res.status(409).json({ error: 'No active editor session for this project. Open the project first.' });
   }
 
   const sessionId = uuidv4();
@@ -50,6 +41,9 @@ router.post('/:projectId/terminal', async (req, res) => {
     host:  session.containerIp,
     port:  session.ptyPort,
     label: `editor-pty-${projectId}`,
+    agentId: session.agentId,        // Remote agent ID
+    containerId: session.containerId, // Container ID on that agent
+    projectId: projectId,            // Security context
   });
 
   return res.json({ sessionId });

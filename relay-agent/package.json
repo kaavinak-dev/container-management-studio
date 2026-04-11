@@ -1,0 +1,13 @@
+{
+  "name": "relay-agent",
+  "version": "1.0.0",
+  "description": "Outbound WebSocket relay agent for distributed container PTY proxy",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "dockerode": "^4.0.2"
+  }
+}

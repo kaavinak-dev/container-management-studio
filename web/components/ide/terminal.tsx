@@ -9,6 +9,7 @@ import '@xterm/xterm/css/xterm.css'
 interface TerminalPanelProps {
   projectId: string
   isOpen: boolean
+  sessionReady: boolean
   onToggle: () => void
 }
 
@@ -82,7 +83,7 @@ class LineBuffer {
   }
 }
 
-export function TerminalPanel({ projectId, isOpen, onToggle }: TerminalPanelProps) {
+export function TerminalPanel({ projectId, isOpen, sessionReady, onToggle }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -96,7 +97,7 @@ export function TerminalPanel({ projectId, isOpen, onToggle }: TerminalPanelProp
   }, [rawMode])
 
   useEffect(() => {
-    if (!isOpen || !containerRef.current) return
+    if (!isOpen || !sessionReady || !containerRef.current) return
 
     const term = new XTerm({
       cursorBlink: true,
@@ -167,7 +168,7 @@ export function TerminalPanel({ projectId, isOpen, onToggle }: TerminalPanelProp
       termRef.current = null
       wsRef.current = null
     }
-  }, [isOpen, projectId])
+  }, [isOpen, sessionReady, projectId])
 
   return (
     <div
@@ -222,7 +223,14 @@ export function TerminalPanel({ projectId, isOpen, onToggle }: TerminalPanelProp
 
       {/* xterm.js mount point */}
       {isOpen && (
-        <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
+        <>
+          {!sessionReady && (
+            <div className="flex items-center justify-center flex-1 text-[#858585] text-xs font-mono">
+              Initializing session…
+            </div>
+          )}
+          <div ref={containerRef} className={`flex-1 overflow-hidden p-1 ${!sessionReady ? 'hidden' : ''}`} />
+        </>
       )}
     </div>
   )

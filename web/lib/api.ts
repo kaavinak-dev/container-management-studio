@@ -126,6 +126,11 @@ export const projectAPI = {
     return apiCall<void>("DELETE", `/projects/${id}`);
   },
 
+  // POST /editor-sessions
+  async ensureSession(projectId: string) {
+    return apiCall<{ sessionReady: boolean }>("POST", `/editor-sessions`, { projectId });
+  },
+
   // POST /projects/:id/deploy
   async deployProject(id: string) {
     return apiCall<{ executableProjectId: string }>("POST", `/projects/${id}/deploy`);

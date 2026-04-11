@@ -29,6 +29,6 @@ RUN chmod +x /entrypoint.sh
 # Create the workspace mount point
 RUN mkdir -p /workspace
 
-EXPOSE 5003 9999 9229
+EXPOSE 9999 9229
 
 CMD ["/entrypoint.sh"]

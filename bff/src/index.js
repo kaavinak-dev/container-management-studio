@@ -6,6 +6,7 @@ const { router: projectsRouter } = require('./routes/projects');
 const { router: deploymentsRouter } = require('./routes/deployments');
 const { router: editorSessionsRouter } = require('./routes/editorSessions');
 const { attachPtyProxy } = require('./proxy/ptyProxy');
+const { attachAgentProxy } = require('./proxy/agentProxy');
 const { ensureBucket, initProjectMappings } = require('./services/minioClient');
 const backend = require('./services/backendClient');
 
@@ -24,8 +25,9 @@ app.use('/editor-sessions', editorSessionsRouter);
 // Single http.Server so that Express (HTTP) and the WS proxy share the same port
 const server = http.createServer(app);
 
-// WebSocket upgrade handler for /proxy/:sessionId → sidecar ws://host:port/pty
+// WebSocket upgrade handlers
 attachPtyProxy(server);
+attachAgentProxy(server);
 
 (async () => {
   //await ensureBucket();
