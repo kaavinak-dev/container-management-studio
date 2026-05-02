@@ -37,4 +37,26 @@ async function getDeploymentSteps(executableProjectId) {
   return data; // array of DeploymentStep objects
 }
 
-module.exports = { createProject, listProjects, getProject, deleteProject, deployProjectForm, getDeploymentSteps };
+async function listResources(projectId) {
+  const { data } = await http.get(`/api/projects/${projectId}/resources`);
+  return data;
+}
+
+async function addResource(projectId, resourceType) {
+  const { data } = await http.post(`/api/projects/${projectId}/resources`, { resourceType });
+  return data;
+}
+
+async function removeResource(projectId, resourceId) {
+  await http.delete(`/api/projects/${projectId}/resources/${resourceId}`);
+}
+
+async function getResourceCatalog() {
+  const { data } = await http.get('/api/resource-catalog');
+  return data;
+}
+
+module.exports = {
+  createProject, listProjects, getProject, deleteProject, deployProjectForm, getDeploymentSteps,
+  listResources, addResource, removeResource, getResourceCatalog,
+};

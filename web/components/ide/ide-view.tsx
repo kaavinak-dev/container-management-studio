@@ -3,12 +3,14 @@
 import { useState, useEffect, useCallback } from "react"
 import { ArrowLeft, Rocket } from "lucide-react"
 import { projectAPI } from "@/lib/api"
+import type { Resource, ResourceDefinition } from "@/lib/api"
 import type { Project, ProjectFile, ProjectStatus } from "@/lib/store"
 import { StatusBadge } from "@/components/status-badge"
 import { FileTree } from "@/components/ide/file-tree"
 import { CodeEditor } from "@/components/ide/code-editor"
 import { TerminalPanel } from "@/components/ide/terminal"
 import { DeployModal } from "@/components/ide/deploy-modal"
+import { ResourcePanel } from "@/components/ide/resource-panel"
 
 
 interface IDEViewProps {
@@ -29,6 +31,9 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
   const [status, setStatus] = useState<ProjectStatus>(project.status)
   const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(new Set())
   const [sessionReady, setSessionReady] = useState(false)
+  const [resources, setResources] = useState<Resource[]>([])
+  const [resourceCatalog, setResourceCatalog] = useState<ResourceDefinition[]>([])
+  const [resourcesLoading, setResourcesLoading] = useState(true)
 
   const activeFile = files.find((f) => f.name === activeFileName) ?? files[0]
   const isActiveDirty = dirtyFiles.has(activeFileName)
@@ -77,6 +82,45 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
       projectAPI.ensureSession(project.id)
         .then(() => setSessionReady(true))
         .catch(() => setSessionReady(true)) // best-effort; terminal will fail gracefully
+    }
+  }, [project.id])
+
+  // Fetch resources and catalog once the session is ready
+  useEffect(() => {
+    if (!sessionReady) return
+    async function loadResources() {
+      setResourcesLoading(true)
+      try {
+        const [resList, catalog] = await Promise.all([
+          projectAPI.listResources(project.id),
+          projectAPI.getResourceCatalog(),
+        ])
+        setResources(resList)
+        setResourceCatalog(catalog)
+      } catch (error) {
+        console.error("Failed to load resources:", error)
+      } finally {
+        setResourcesLoading(false)
+      }
+    }
+    loadResources()
+  }, [sessionReady, project.id])
+
+  const handleAddResource = useCallback(async (type: string) => {
+    try {
+      const newResource = await projectAPI.addResource(project.id, type)
+      setResources((prev) => [...prev, newResource])
+    } catch (error) {
+      console.error("Failed to add resource:", error)
+    }
+  }, [project.id])
+
+  const handleRemoveResource = useCallback(async (resourceId: number) => {
+    try {
+      await projectAPI.removeResource(project.id, resourceId)
+      setResources((prev) => prev.filter((r) => r.id !== resourceId))
+    } catch (error) {
+      console.error("Failed to remove resource:", error)
     }
   }, [project.id])
 
@@ -219,14 +263,24 @@ export function IDEView({ project, onBack, onProjectUpdate }: IDEViewProps) {
       {/* Main 3-panel area */}
       <div className="flex flex-1 overflow-hidden">
         {/* File tree sidebar */}
-        <div className="w-56 flex-shrink-0 bg-[#252526] border-r border-[#3c3c3c] overflow-hidden">
-          <FileTree
-            files={files}
-            activeFile={activeFileName}
-            onSelectFile={handleSelectFile}
-            onCreateFile={handleCreateFile}
-            onDeleteFile={handleDeleteFile}
-            onRenameFile={handleRenameFile}
+        <div className="w-56 flex-shrink-0 bg-[#252526] border-r border-[#3c3c3c] overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-y-auto">
+            <FileTree
+              files={files}
+              activeFile={activeFileName}
+              onSelectFile={handleSelectFile}
+              onCreateFile={handleCreateFile}
+              onDeleteFile={handleDeleteFile}
+              onRenameFile={handleRenameFile}
+            />
+          </div>
+          <ResourcePanel
+            projectId={project.id}
+            resources={resources}
+            catalog={resourceCatalog}
+            onAddResource={handleAddResource}
+            onRemoveResource={handleRemoveResource}
+            isLoading={resourcesLoading}
           />
         </div>
 

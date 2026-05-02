@@ -5,6 +5,7 @@ const { router: sessionsRouter } = require('./routes/sessions');
 const { router: projectsRouter } = require('./routes/projects');
 const { router: deploymentsRouter } = require('./routes/deployments');
 const { router: editorSessionsRouter } = require('./routes/editorSessions');
+const { router: resourcesRouter } = require('./routes/resources');
 const { attachPtyProxy } = require('./proxy/ptyProxy');
 const { attachAgentProxy } = require('./proxy/agentProxy');
 const { ensureBucket, initProjectMappings } = require('./services/minioClient');
@@ -21,6 +22,7 @@ app.use('/sessions', sessionsRouter);
 app.use('/projects', projectsRouter);
 app.use('/deployments', deploymentsRouter);
 app.use('/editor-sessions', editorSessionsRouter);
+app.use('/resources', resourcesRouter);
 
 // Single http.Server so that Express (HTTP) and the WS proxy share the same port
 const server = http.createServer(app);

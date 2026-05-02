@@ -53,6 +53,17 @@ async function stopSession(projectId) {
   sessions.delete(projectId);
 }
 
+// Periodic heartbeat relay: sends heartbeat to backend every 30 seconds for active sessions.
+// This keeps the fabric network's LastActivity fresh so FabricCleanupService doesn't tear it down.
+setInterval(async () => {
+  const FIVE_MINUTES = 5 * 60 * 1000;
+  for (const [projectId, session] of sessions) {
+    if (Date.now() - session.lastActivity.getTime() < FIVE_MINUTES) {
+      axios.put(`${BACKEND_URL}/api/editor-sessions/${projectId}/activity`).catch(() => {});
+    }
+  }
+}, 30_000);
+
 // Inactivity cleanup: runs every 60 seconds, stops sessions idle for more than 2 hours
 setInterval(async () => {
   const TWO_HOURS = 2 * 60 * 60 * 1000;

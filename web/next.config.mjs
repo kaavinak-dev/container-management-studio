@@ -30,6 +30,12 @@ const nextConfig = {
       { source: '/editor-sessions',                          destination: `${BFF_URL}/editor-sessions` },
       { source: '/editor-sessions/:projectId/heartbeat',     destination: `${BFF_URL}/editor-sessions/:projectId/heartbeat` },
       { source: '/editor-sessions/:projectId/terminal',      destination: `${BFF_URL}/editor-sessions/:projectId/terminal` },
+
+      // REST: resources
+      { source: '/resources',                          destination: `${BFF_URL}/resources` },
+      { source: '/resources/catalog/all',              destination: `${BFF_URL}/resources/catalog/all` },
+      { source: '/resources/:projectId',               destination: `${BFF_URL}/resources/:projectId` },
+      { source: '/resources/:projectId/:resourceId',    destination: `${BFF_URL}/resources/:projectId/:resourceId` },
     ]
   },
 }

@@ -1,3 +1,21 @@
+export interface Resource {
+  id: number
+  resourceType: string
+  alias: string
+  status: "provisioning" | "ready" | "stopped" | "failed"
+  imageTag: string
+  containerName: string
+  createdAt: string
+}
+
+export interface ResourceDefinition {
+  type: string
+  displayName: string
+  defaultAlias: string
+  image: string
+  defaultPort: number
+}
+
 export interface DeploymentStep {
   key: string
   label: string
@@ -139,5 +157,27 @@ export const projectAPI = {
   // GET /deployments/:executableProjectId/steps
   async getDeploymentSteps(executableProjectId: string) {
     return apiCall<DeploymentStep[]>("GET", `/deployments/${executableProjectId}/steps`);
+  },
+
+  // ── Resource Management ────────────────────────────────────────────────
+
+  // GET /resources/:projectId
+  async listResources(projectId: string) {
+    return apiCall<Resource[]>("GET", `/resources/${projectId}`);
+  },
+
+  // POST /resources  { projectId, resourceType }
+  async addResource(projectId: string, resourceType: string) {
+    return apiCall<Resource>("POST", `/resources`, { projectId, resourceType });
+  },
+
+  // DELETE /resources/:projectId/:resourceId
+  async removeResource(projectId: string, resourceId: number) {
+    return apiCall<void>("DELETE", `/resources/${projectId}/${resourceId}`);
+  },
+
+  // GET /resources/catalog/all
+  async getResourceCatalog() {
+    return apiCall<ResourceDefinition[]>("GET", `/resources/catalog/all`);
   },
 };
